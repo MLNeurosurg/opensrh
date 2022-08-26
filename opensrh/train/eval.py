@@ -104,6 +104,8 @@ def make_specs(predictions: Dict[str, Union[torch.Tensor, List[str]]]) -> None:
         "labels": [l.item() for l in list(predictions["label"])],
         "logits": [l.tolist() for l in list(predictions["logits"])]
     })
+    pred["logits"] = pred["logits"].apply(
+        lambda x: torch.nn.functional.softmax(torch.tensor(x), dim=0))
 
     # add patient and slide info from patch paths
     pred["patient"] = pred["path"].apply(lambda x: x.split("/")[-4])
@@ -118,9 +120,10 @@ def make_specs(predictions: Dict[str, Union[torch.Tensor, List[str]]]) -> None:
     slides = get_agged_logits(pred, "slide")
     patients = get_agged_logits(pred, "patient")
 
-    patch_logits = torch.tensor(np.vstack(pred["logits"]))
-    slides_logits = torch.tensor(np.vstack(slides["logits"]))
-    patient_logits = torch.tensor(np.vstack(patients["logits"]))
+    normalize_f = lambda x: torch.nn.functional.normalize(x, dim=1, p=1)
+    patch_logits = normalize_f(torch.tensor(np.vstack(pred["logits"])))
+    slides_logits = normalize_f(torch.tensor(np.vstack(slides["logits"])))
+    patient_logits = normalize_f(torch.tensor(np.vstack(patients["logits"])))
 
     patch_label = torch.tensor(pred["labels"])
     slides_label = torch.tensor(slides["labels"])
@@ -138,17 +141,21 @@ def make_specs(predictions: Dict[str, Union[torch.Tensor, List[str]]]) -> None:
         t2_val = t2(logits, label)
         t3_val = t3(logits, label)
         mca_val = mca(logits, label)
-        map_val = map(torch.nn.functional.softmax(logits, dim=1), label)
+        map_val = map(logits, label)
 
-        return torch.stack((acc_val, t2_val, t3_val, mca_val, map_val))
+        fn = (logits.argmax(dim=1) == 4) & (label != 4)
+        fnr = fn.sum() / len(fn)
+
+        return torch.stack((acc_val, t2_val, t3_val, mca_val, map_val, fnr))
 
     all_metrics = torch.vstack((get_all_metrics(patch_logits, patch_label),
                                 get_all_metrics(slides_logits, slides_label),
                                 get_all_metrics(patient_logits,
                                                 patient_label)))
-    all_metrics = pd.DataFrame(all_metrics,
-                               columns=["acc", "t2", "t3", "mca", "map"],
-                               index=["patch", "slide", "patient"])
+    all_metrics = pd.DataFrame(
+        all_metrics,
+        columns=["acc", "t2", "t3", "mca", "map", "fnr"],
+        index=["patch", "slide", "patient"])
 
     # generate confusion matrices
     patch_conf = confusion_matrix(y_true=patch_label,
