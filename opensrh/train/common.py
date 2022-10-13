@@ -86,6 +86,7 @@ def get_cosine_schedule_with_warmup(optimizer: torch.optim.Optimizer,
                                     num_cycles: float = 0.5,
                                     last_epoch: int = -1):
     """Create cosine learn rate scheduler with linear warm up built in."""
+
     def lr_lambda(current_step):
         if current_step < num_warmup_steps:
             return float(current_step) / float(max(1, num_warmup_steps))
@@ -125,12 +126,19 @@ def config_loggers(exp_root):
         h.setFormatter(formatter)
 
 
+def setup_ddp_exp_name(exp_name: str):
+    if pl.utilities.rank_zero.rank_zero_only.rank != 0:
+        return os.path.join(exp_name, "high_rank")
+    else:
+        return exp_name
+
+
 def setup_output_dirs(cf: Dict, get_exp_name: callable,
                       cmt_append: str) -> Tuple[str, str, callable]:
     """Get name of the ouput dirs and create them in the file system."""
     log_root = cf["infra"]["log_dir"]
     instance_name = "_".join([get_exp_name(cf), cmt_append])
-    exp_name = cf["infra"]["exp_name"]
+    exp_name = setup_ddp_exp_name(cf["infra"]["exp_name"])
     exp_root = os.path.join(log_root, exp_name, instance_name)
 
     model_dir = os.path.join(exp_root, 'models')
@@ -228,6 +236,7 @@ def get_contrastive_dataloaders(cf):
 
 class CEBaseSystem(pl.LightningModule):
     """Abstract base lightning system for histological classification."""
+
     def __init__(self, cf: Dict[str, Any], nc: int, num_it_per_ep: int):
         super().__init__()
         self.cf_ = cf

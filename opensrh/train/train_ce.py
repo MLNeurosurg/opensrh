@@ -113,7 +113,7 @@ def main():
     trainer = pl.Trainer(accelerator="gpu",
                          devices=-1,
                          default_root_dir=exp_root,
-                         strategy=pl.strategies.DDPSpawnStrategy(
+                         strategy=pl.strategies.DDPStrategy(
                              find_unused_parameters=False, static_graph=True),
                          logger=logger,
                          log_every_n_steps=10,

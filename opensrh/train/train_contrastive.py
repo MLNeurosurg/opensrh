@@ -56,13 +56,21 @@ class ContrastiveSystem(pl.LightningModule):
 
     def on_train_epoch_end(self):
         train_loss = self.train_loss.compute()
-        self.log("train/contrastive_manualepoch", train_loss, on_epoch=True)
+        self.log("train/contrastive_manualepoch",
+                 train_loss,
+                 on_epoch=True,
+                 sync_dist=False,
+                 rank_zero_only=True)
         logging.info(f"train/contrastive_manualepoch {train_loss}")
         self.train_loss.reset()
 
     def on_validation_epoch_end(self):
         val_loss = self.val_loss.compute()
-        self.log("val/contrastive_manualepoch", val_loss, on_epoch=True)
+        self.log("val/contrastive_manualepoch",
+                 val_loss,
+                 on_epoch=True,
+                 sync_dist=False,
+                 rank_zero_only=True)
         logging.info(f"val/contrastive_manualepoch {val_loss}")
         self.val_loss.reset()
 
@@ -105,7 +113,10 @@ class SimCLRSystem(ContrastiveSystem):
 
     def training_step(self, batch, batch_idx):
         pred = torch.cat([self.model(x) for x in batch["image"]], dim=1)
-        loss = self.criterion(pred)
+        pred_gather = self.all_gather(pred, sync_grads=True)
+        pred_gather = pred_gather.reshape(-1, *pred_gather.shape[-2:])
+
+        loss = self.criterion(pred_gather)
         bs = batch["image"][0].shape[0]
         self.log("train/contrastive",
                  loss,
@@ -118,7 +129,10 @@ class SimCLRSystem(ContrastiveSystem):
     def validation_step(self, batch, batch_idx):
         bs = batch["image"][0].shape[0]
         pred = torch.cat([self.model(x) for x in batch["image"]], dim=1)
-        loss = self.criterion(pred)
+        pred_gather = self.all_gather(pred, sync_grads=True)
+        pred_gather = pred_gather.reshape(-1, *pred_gather.shape[-2:])
+
+        loss = self.criterion(pred_gather)
         self.val_loss.update(loss, weight=bs)
 
 
@@ -133,7 +147,11 @@ class SupConSystem(ContrastiveSystem):
 
     def training_step(self, batch, batch_idx):
         pred = torch.cat([self.model(x) for x in batch["image"]], dim=1)
-        loss = self.criterion(pred, batch["label"])
+        pred_gather = self.all_gather(pred, sync_grads=True)
+        pred_gather = pred_gather.reshape(-1, *pred_gather.shape[-2:])
+        label_gather = self.all_gather(batch["label"]).reshape(-1, 1)
+
+        loss = self.criterion(pred_gather, label_gather)
         bs = batch["image"][0].shape[0]
         self.log("train/contrastive",
                  loss,
@@ -146,7 +164,11 @@ class SupConSystem(ContrastiveSystem):
     def validation_step(self, batch, batch_idx):
         bs = batch["image"][0].shape[0]
         pred = torch.cat([self.model(x) for x in batch["image"]], dim=1)
-        loss = self.criterion(pred, batch["label"])
+        pred_gather = self.all_gather(pred, sync_grads=True)
+        pred_gather = pred_gather.reshape(-1, *pred_gather.shape[-2:])
+        label_gather = self.all_gather(batch["label"]).reshape(-1, 1)
+
+        loss = self.criterion(pred_gather, label_gather)
         self.val_loss.update(loss, weight=bs)
 
 
@@ -189,7 +211,7 @@ def main():
         dirpath=model_dir,
         save_top_k=-1,
         save_on_train_epoch_end=True,
-        filename="ckpt-epoch{epoch}-acc{val/acc:.2f}",
+        filename="ckpt-epoch{epoch}-loss{val/contrastive_manualepoch:.2f}",
         auto_insert_metric_name=False)
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval="step",
                                                   log_momentum=False)
@@ -198,7 +220,7 @@ def main():
     trainer = pl.Trainer(accelerator="gpu",
                          devices=-1,
                          default_root_dir=exp_root,
-                         strategy=pl.strategies.DDPSpawnStrategy(
+                         strategy=pl.strategies.DDPStrategy(
                              find_unused_parameters=False, static_graph=True),
                          logger=logger,
                          log_every_n_steps=10,
